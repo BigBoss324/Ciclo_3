@@ -1,5 +1,4 @@
 # lets import train test split for splitting the data
-from sklearn.model_selection import train_test_split
 from sklearn.model_selection import GridSearchCV 
 from sklearn.preprocessing import  MinMaxScaler, OneHotEncoder
 from sklearn.linear_model import Ridge
@@ -16,6 +15,24 @@ from sklearn.neighbors import KNeighborsRegressor
 import pickle
 import seaborn as sns
 from sklearn.compose import ColumnTransformer
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.linear_model import Ridge
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.metrics import mean_squared_error
+from sklearn.preprocessing import OneHotEncoder, StandardScaler, MinMaxScaler, PolynomialFeatures,OrdinalEncoder,LabelBinarizer
+from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
+from sklearn.pipeline import Pipeline
+from sklearn.feature_selection import SelectKBest, r_regression
+import warnings
+import os
+import seaborn as sns
+import pickle
+from sklearn.preprocessing import PowerTransformer
+from sklearn.feature_selection import VarianceThreshold
 
 
 warnings.filterwarnings('ignore')
@@ -25,19 +42,18 @@ DATA_PATH = "C:/Users/Alexis Taha/Desktop/digital nao"
 FILE_BIKERPRO = 'SeoulBikeData.csv'
 bikerpro = pd.read_csv(os.path.join(DATA_PATH, FILE_BIKERPRO), encoding="ISO-8859-1")
 
-
 bikerpro['Date'] = pd.to_datetime(bikerpro['Date'], format='%d/%m/%Y')
 
+bikerpro['Hour'] = bikerpro['Hour'].astype('category')
 bikerpro['Month'] = bikerpro['Date'].dt.month.astype('category')
 bikerpro['Day'] = bikerpro['Date'].dt.day_name()    
 bikerpro['Weekdays_or_weekend'] = bikerpro['Day'].apply(lambda x: 1 if x=='Saturday' or x=='Sunday' else 0)
 
-bikerpro.drop(['Date',"Day"],axis=1 ,inplace=True)
-
 df = bikerpro.copy()
 
+# As per above vif calculation dropping humidity and visibility columns.
 df.drop(['Humidity(%)','Visibility (10m)'],inplace=True,axis=1)
-
+# Create dummy variables for the catgeorical variable Season
 df['Spring'] = np.where(df['Seasons'] == 'Spring', 1, 0)
 df['Summer'] = np.where(df['Seasons'] == 'Summer', 1, 0)
 df['Autumn'] = np.where(df['Seasons'] == 'Autumn', 1, 0)
@@ -47,19 +63,34 @@ df.drop(columns=['Seasons'],axis=1,inplace=True)
 df['Holiday'] = df['Holiday'].map({'No Holiday':0, 'Holiday':1})
 df['Functioning Day'] = df['Functioning Day'].map({'Yes':1, 'No':0})
 
-y = np.sqrt(df['Rented Bike Count'])
+categorical_cols = df[['Hour','Month']]
 
-X = df.drop('Rented Bike Count',axis=1)
+numerical_cols = df[['Date', 'Rented Bike Count', 'Temperature(°C)',
+       'Wind speed (m/s)',
+       'Solar Radiation (MJ/m2)', 'Rainfall(mm)', 'Snowfall (cm)', 'Spring', 'Summer',
+       'Autumn', 'Winter']]
 
-categorical_cols = X.select_dtypes(include='object').columns
-numerical_cols = X.select_dtypes(exclude='object').columns
+binary_cols = df[['Weekdays_or_weekend','Functioning Day','Holiday']]
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = 0.2, random_state = 0)
+# Create the data of independent variables
+X = pd.concat([categorical_cols, numerical_cols, binary_cols], axis=1)
+X = df.sort_values(['Date', 'Hour'])
 
+
+# Datos de entrenamiento
+X_train = X.loc[: X.shape[0]-1440,:].drop(columns=["Date",'Rented Bike Count', "Day"],axis=1)
+y_train = X.loc[: X.shape[0]-1440,:]['Rented Bike Count']
+
+# Datos de prueba
+X_test = X.loc[X.shape[0]-1440+1:,:].drop(columns=["Date",'Rented Bike Count',"Day"],axis=1)
+y_test = X.loc[X.shape[0]-1440+1:,:]['Rented Bike Count']
 
 # Definición de los pipelines
 numerical_pipe = Pipeline([  # Uso de PowerTransformer
-    ('min_max_scaler', MinMaxScaler())
+    ('yeojohnson', PowerTransformer(method='yeo-johnson')),  # Uso de PowerTransformer
+    ('standar_scaler', StandardScaler()),
+    ('polinomical_features', PolynomialFeatures(degree=2)),
+
 ])
 
 categorical_pipe = Pipeline([
@@ -71,56 +102,57 @@ pre_processor = ColumnTransformer([
     ('categorical', categorical_pipe, categorical_cols),
 ], remainder='passthrough')
 
+selector = VarianceThreshold(threshold=0.1)
+
 # Pipeline para Random Forest
 pipe_rf = Pipeline([
     ('transform', numerical_pipe),
+    ('selector', selector),
     ('model', RandomForestRegressor(random_state=0))
 ])
-
-
 # Pipeline para Ridge
 pipe_ridge = Pipeline([
     ('transform', numerical_pipe),
+    ('selector', selector),
     ('model', Ridge(random_state=0))
 ])
-
 
 # Pipeline para K-NN
 pipe_knn = Pipeline([
     ('transform', numerical_pipe),
+    ('selector', selector),
     ('model', KNeighborsRegressor())
 ])
 
-
 # Parámetros para K-NN
 param_grid_knn = {
-    'model__n_neighbors': [5, 10, 15, 20, 25],
-    'model__weights': ['uniform', 'distance'],
-    'model__metric': ['euclidean', 'manhattan', 'minkowski']
+    'model__n_neighbors': [30],
+    'model__weights': ['distance'],
+    'model__metric': ['manhattan']
 }
-
 
 # Parámetros para Random Forest
 param_dist_rf = {
-    'model__n_estimators': [50, 100, 150],
-    'model__max_depth': [5, 10, 15, None],
-    'model__min_samples_split': [2, 5, 10],
-    'model__min_samples_leaf': [1, 2, 4]
+    'model__n_estimators': [10],
+    'model__max_features': ["sqrt"],
+    'model__min_samples_split': [10],
+    'model__bootstrap': [True]
 }
 
 # Parámetros para Ridge
 param_grid_ridge = {
-    'model__alpha': [0.1, 0.5, 1.0, 2.0, 5.0]
+    'model__alpha': [2]
 }
 
-tscv = TimeSeriesSplit(n_splits=4, test_size=2)
+n_splits = 5
+tscv = TimeSeriesSplit(n_splits, test_size=732)
 
 cv_rf = GridSearchCV(
     estimator=pipe_rf,
-    param_grid=param_dist_rf,  # Uso de 'param_grid'
-    cv=tscv,                   # TimeSeriesSplit como estrategia de validación cruzada
+    param_grid=param_dist_rf,
+    cv=tscv,
     scoring='neg_mean_squared_error',
-    n_jobs=-1                  # Usa todos los núcleos disponibles
+    n_jobs=-1
 )
 
 cv_rf.fit(X_train, y_train)
@@ -135,7 +167,6 @@ n_jobs=-1 # Usa todos los núcleos disponibles
 )
 
 cv_ridge.fit(X_train, y_train)
-
 
 cv_knn = GridSearchCV(
 estimator=pipe_knn,
